@@ -16,6 +16,7 @@ class StatsPanel(QWidget):
         self.snap = Snapshot()
         self.source_name = "No input"
         self.source_ok = False
+        self.mono = False
         self.setMinimumWidth(220)
 
     def set_snapshot(self, snap: Snapshot) -> None:
@@ -45,25 +46,31 @@ class StatsPanel(QWidget):
                                               int(right - left - 24 * scale)))
 
         s = self.snap
+        # (label, value, unit, big). Live values (M/S) share one compact row so the
+        # long-term readouts keep the Clarity M layout.
         rows = [
-            ("Program Loudness", fmt(s.integrated), "LUFS"),
-            ("True-peak Max", fmt(s.true_peak_max), "dBTP"),
-            ("Loudness Max", fmt(s.max_momentary), "LUFS"),
-            ("Loudness Range", fmt(s.lra), "LU"),
-            ("Peak to Loudness", fmt(s.plr), "dB"),
+            ("Program Loudness", fmt(s.integrated), "LUFS", True),
+            ("Short-term  /  Momentary", f"{fmt(s.short_term)}  /  {fmt(s.momentary)}", "LUFS", False),
+            ("True-peak Max", fmt(s.true_peak_max), "dBTP", True),
+            ("Loudness Max (M)", fmt(s.max_momentary), "LUFS", True),
+            ("Loudness Range", fmt(s.lra), "LU", True),
+            ("Peak to Loudness", fmt(s.plr), "dB", True),
         ]
         top = 50 * scale
         corr_h = 96 * scale
-        row_h = (h - top - corr_h) / len(rows)
+        weights = [1.0 if big else 0.72 for _, _, _, big in rows]
+        unit_h = (h - top - corr_h) / sum(weights)
         unit_w = 64 * scale
-        for i, (label, value, unit) in enumerate(rows):
-            ry = top + i * row_h
+        ry = top
+        for (label, value, unit, big), wgt in zip(rows, weights):
+            row_h = unit_h * wgt
             p.setPen(theme.TEXT)
             p.setFont(font(17 * scale))
             p.drawText(QRectF(left, ry + 4 * scale, right - left, 24 * scale),
                        int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), label)
-            p.setPen(theme.YELLOW)
-            p.setFont(font(min(44 * scale, row_h * 0.52), QFont.Weight.Light))
+            p.setPen(theme.YELLOW if big else theme.TEXT)
+            size = min(44 * scale, row_h * 0.52) if big else min(26 * scale, row_h * 0.5)
+            p.setFont(font(size, QFont.Weight.Light if big else QFont.Weight.Normal))
             p.drawText(QRectF(left, ry + 26 * scale, right - left - unit_w, row_h - 30 * scale),
                        int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter), value)
             p.setPen(theme.DIM)
@@ -73,6 +80,7 @@ class StatsPanel(QWidget):
             p.setPen(QPen(theme.PANEL_LINE, 1))
             p.drawLine(QRectF(left, ry + row_h - 1, right - left, 1).topLeft(),
                        QRectF(left, ry + row_h - 1, right - left, 1).topRight())
+            ry += row_h
 
         self._draw_correlation(p, left, right, h - corr_h, corr_h, scale)
         p.end()
@@ -83,6 +91,13 @@ class StatsPanel(QWidget):
         p.setFont(font(17 * scale))
         p.drawText(QRectF(left, top + 6 * scale, right - left, 24 * scale),
                    int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), "Correlation")
+        if self.mono:
+            p.setPen(theme.DIM)
+            p.setFont(font(14 * scale))
+            p.drawText(QRectF(left, top + 34 * scale, right - left, 40 * scale),
+                       int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap),
+                       "Mono input, metered as dual-mono (EBU Tech 3343)")
+            return
         label_w = 36 * scale
         bar_left = left
         bar_right = right - label_w

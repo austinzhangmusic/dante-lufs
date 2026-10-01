@@ -122,6 +122,7 @@ class LoudnessMeter:
             self._radar = np.full(self.radar_slots, NEG_INF)
             self._radar_cell = 0
             self._radar_slot = 0
+            self._radar_t0 = getattr(self, "samples", 0)
 
     def reset(self) -> None:
         with self.lock:
@@ -135,6 +136,8 @@ class LoudnessMeter:
             self._st_blocks = _GrowArray()
             self.momentary = NEG_INF
             self.short_term = NEG_INF
+            self.momentary_live = NEG_INF
+            self.short_term_live = NEG_INF
             self.integrated = NEG_INF
             self.lra = 0.0
             self.max_momentary = NEG_INF
@@ -145,6 +148,7 @@ class LoudnessMeter:
             self._radar = np.full(self.radar_slots, NEG_INF)
             self._radar_cell = 0
             self._radar_slot = 0
+            self._radar_t0 = 0
             self._ll = self._rr = self._lr = 0.0
             self._mid = self._side = 0.0
             self.correlation = 0.0
@@ -208,6 +212,26 @@ class LoudnessMeter:
             if self._cell_fill == self.cell_len:
                 self._finish_cell()
         self.samples += n
+
+        # Sample-accurate sliding windows for a smooth display between cells.
+        if self._ncells >= MOMENTARY_CELLS:
+            self.momentary_live = float(power_to_lufs(self._window_power(MOMENTARY_CELLS)))
+        if self._ncells >= SHORT_TERM_CELLS:
+            self.short_term_live = float(power_to_lufs(self._window_power(SHORT_TERM_CELLS)))
+
+    def _window_power(self, k: int) -> float:
+        """Mean power over the last k*cell_len samples, including the partial cell.
+
+        The partial cell contributes its accumulated samples, the k-1 newest
+        full cells contribute fully and the k-th newest cell contributes only
+        the remainder, so the window length is exactly k cells.
+        """
+        fill = self._cell_fill
+        partial = float(np.dot(self.weights, self._cell_acc))
+        newest = [(self._ncells - 1 - j) % SHORT_TERM_CELLS for j in range(k)]
+        full = float(self._cells[newest[: k - 1]].sum()) * self.cell_len if k > 1 else 0.0
+        oldest = float(self._cells[newest[k - 1]]) * (self.cell_len - fill)
+        return (partial + full + oldest) / (k * self.cell_len)
 
     def _finish_cell(self) -> None:
         p = float(np.dot(self.weights, self._cell_acc) / self.cell_len)
@@ -299,10 +323,20 @@ class LoudnessMeter:
             self._tp_recent_lin[:] = 0.0
             lr_sum = self._ll + self._rr
             balance = (self._rr - self._ll) / lr_sum if lr_sum > 1e-12 else 0.0
-            head = (self._radar_cell % self.radar_cells_per_rev) / self.radar_cells_per_rev
+            # Sweep head from the sample clock (smooth), radar slot at the head
+            # carries the live short-term value until its cell completes.
+            rev_samples = self.radar_seconds * self.fs
+            head = ((self.samples - self._radar_t0) / rev_samples) % 1.0 if rev_samples > 0 else 0.0
+            radar = self._radar.copy()
+            head_slot = int(head * self.radar_slots) % self.radar_slots
+            if self.short_term_live != NEG_INF:
+                if head_slot == self._radar_slot and self._radar_cell > 0:
+                    radar[head_slot] = max(radar[head_slot], self.short_term_live)
+                else:
+                    radar[head_slot] = self.short_term_live
             return Snapshot(
-                momentary=self.momentary,
-                short_term=self.short_term,
+                momentary=self.momentary_live,
+                short_term=self.short_term_live,
                 integrated=self.integrated,
                 lra=self.lra,
                 max_momentary=self.max_momentary,
@@ -317,7 +351,7 @@ class LoudnessMeter:
                 elapsed_s=self.samples / self.fs,
                 peak_alert=self.peak_alert,
                 loud_alert=self.loud_alert,
-                radar=self._radar.copy(),
+                radar=radar,
                 radar_head=head,
                 spectrum_buffer=self._spec.copy(),
                 fs=self.fs,

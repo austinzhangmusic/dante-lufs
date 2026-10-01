@@ -42,12 +42,16 @@ class TruePeakBars(QWidget):
         self._last = time.monotonic()
         self.setMinimumWidth(150)
 
+    def set_mono(self, mono: bool) -> None:
+        self.names = ["M"] if mono else ["L", "R"]
+        self.update()
+
     def set_snapshot(self, snap: Snapshot) -> None:
         now = time.monotonic()
         dt = max(0.0, min(0.5, now - self._last))
         self._last = now
         recent = snap.true_peak_recent_ch
-        for i in range(2):
+        for i in range(len(self.names)):
             v = float(recent[i]) if i < len(recent) else NEG_INF
             fallen = self.level[i] - FALL_DB_PER_S * dt if self.level[i] != NEG_INF else NEG_INF
             self.level[i] = max(v, fallen)

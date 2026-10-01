@@ -97,6 +97,7 @@ class AudioEngine:
         self.meter: LoudnessMeter | None = None
         self.device: InputDevice | None = None
         self.first_channel = 0
+        self.mono = False
         self.samplerate = 0
         self.paused = False
         self.xruns = 0
@@ -113,23 +114,34 @@ class AudioEngine:
         device: InputDevice,
         first_channel: int = 0,
         samplerate: float | None = None,
+        mono: bool = False,
         **meter_kwargs,
     ) -> None:
+        """Open ``device``. Stereo: channels first_channel and first_channel+1.
+        Mono: the single channel ``first_channel``, metered as dual-mono
+        (duplicated to L and R, per EBU Tech 3343)."""
         self.stop()
         self.error = None
         self.device = device
-        self.first_channel = first_channel
+        self.mono = mono
         fs = float(samplerate) if samplerate else device.default_samplerate
-        left, right = first_channel, first_channel + 1
-        if right >= device.channels:
-            left, right = 0, 1
+        if mono:
+            ch = min(max(0, first_channel), device.channels - 1)
+            wanted = [ch]
+            self.first_channel = ch
+        else:
+            left, right = first_channel, first_channel + 1
+            if right >= device.channels:
+                left, right = 0, 1
+            wanted = [left, right]
+            self.first_channel = left
 
         attempts = []
         if device.hostapi == "ASIO":
-            attempts.append((2, sd.AsioSettings(channel_selectors=[left, right]), slice(0, 2)))
+            attempts.append((len(wanted), sd.AsioSettings(channel_selectors=wanted), slice(0, len(wanted))))
         elif device.hostapi == "Core Audio":
-            attempts.append((2, sd.CoreAudioSettings(channel_map=[left, right]), slice(0, 2)))
-        attempts.append((right + 1, None, slice(left, right + 1)))
+            attempts.append((len(wanted), sd.CoreAudioSettings(channel_map=wanted), slice(0, len(wanted))))
+        attempts.append((wanted[-1] + 1, None, slice(wanted[0], wanted[-1] + 1)))
 
         last_exc: Exception | None = None
         for channels, extra, sel in attempts:
@@ -192,7 +204,10 @@ class AudioEngine:
             self.xruns += 1
         if self.paused or self._queue.qsize() > 200:
             return
-        self._queue.put(np.array(indata[:, self._sel], dtype=np.float32, copy=True))
+        block = np.array(indata[:, self._sel], dtype=np.float32, copy=True)
+        if self.mono:
+            block = np.repeat(block[:, :1], 2, axis=1)
+        self._queue.put(block)
 
     def _worker(self) -> None:
         while self._running:

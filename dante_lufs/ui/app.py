@@ -4,6 +4,7 @@ from __future__ import annotations
 from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -41,7 +42,8 @@ QToolButton {
 }
 QToolButton:hover { color: #ffffff; }
 QToolButton:pressed { color: #ffe12b; }
-QToolButton#reset { color: #ffe12b; }
+QToolButton#reset { color: #ffe12b; border: 1px solid #5a5100; border-radius: 6px; }
+QToolButton#reset:hover { background: #2a2600; }
 QToolButton#rta[active="true"] { color: #ffe12b; }
 QToolButton::menu-indicator { image: none; }
 """
@@ -58,7 +60,8 @@ class MainWindow(QMainWindow):
         self._apply_target_labels()
 
         self.timer = QTimer(self)
-        self.timer.setInterval(33)
+        self.timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.timer.setInterval(16)
         self.timer.timeout.connect(self._tick)
         self.timer.start()
 
@@ -66,9 +69,44 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("R"), self, activated=self.reset)
         QShortcut(QKeySequence("F"), self, activated=self.toggle_fullscreen)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self._exit_fullscreen)
+        QShortcut(QKeySequence(QKeySequence.StandardKey.Preferences), self, activated=self.open_settings)
 
-        self.resize(1280, 800)
+        self._build_menu()
+        self._size_to_screen()
         QTimer.singleShot(0, self._start_audio)
+
+    def _size_to_screen(self) -> None:
+        """Default 1280x760, shrunk so the bottom button bar is always on screen."""
+        screen = QApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen else None
+        w, h = 1280, 760
+        if avail is not None:
+            w = min(w, avail.width() - 40)
+            h = min(h, avail.height() - 80)
+        self.resize(w, h)
+        self.setMinimumSize(900, 540)
+
+    def _build_menu(self) -> None:
+        self.menuBar().setStyleSheet(
+            "QMenuBar { background: #070707; color: #c8c8c8; }"
+            "QMenuBar::item:selected { background: #2f5fb0; }"
+            "QMenu { background: #151515; color: #e8e8e8; }"
+            "QMenu::item:selected { background: #2f5fb0; }")
+        menu = self.menuBar().addMenu("Meter")
+        act_reset = QAction("Reset measurement", self)
+        act_reset.setShortcut(QKeySequence("Ctrl+R"))
+        act_reset.triggered.connect(self.reset)
+        act_pause = QAction("Pause / resume", self)
+        act_pause.triggered.connect(self.toggle_pause)
+        act_rta = QAction("Toggle RTA", self)
+        act_rta.triggered.connect(self.toggle_rta)
+        act_prefs = QAction("Preferences…", self)
+        act_prefs.setMenuRole(QAction.MenuRole.PreferencesRole)
+        act_prefs.triggered.connect(self.open_settings)
+        act_full = QAction("Full screen", self)
+        act_full.triggered.connect(self.toggle_fullscreen)
+        for a in (act_reset, act_pause, act_rta, act_full, act_prefs):
+            menu.addAction(a)
 
     # ---------------------------------------------------------------- config
     def _load_config(self) -> dict:
@@ -77,6 +115,7 @@ class MainWindow(QMainWindow):
             "target_lufs": float(s.value("target_lufs", -24.0)),
             "preset_name": str(s.value("preset_name", "ATSC A/85 (TV, US)")),
             "device_key": s.value("device_key", None),
+            "mono": str(s.value("mono", "false")).lower() in ("true", "1"),
             "first_channel": int(s.value("first_channel", 0)),
             "samplerate": int(s.value("samplerate", 0)),
             "radar_seconds": int(s.value("radar_seconds", 60)),
@@ -157,7 +196,7 @@ class MainWindow(QMainWindow):
         self.target_btn = QToolButton()
         self.target_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.target_btn.setMenu(self._build_target_menu())
-        sys_btn = QToolButton(text="SYS")
+        sys_btn = QToolButton(text="Preferences")
         sys_btn.clicked.connect(self.open_settings)
 
         for b in (self.pause_btn, reset_btn, self.rta_btn, self.target_btn, sys_btn):
@@ -200,6 +239,7 @@ class MainWindow(QMainWindow):
                 device,
                 first_channel=self.config["first_channel"],
                 samplerate=self.config["samplerate"] or None,
+                mono=self.config["mono"],
                 radar_seconds=self.config["radar_seconds"],
                 target_lufs=self.config["target_lufs"],
                 peak_alert_dbtp=self.config["peak_alert_dbtp"],
@@ -211,10 +251,15 @@ class MainWindow(QMainWindow):
             return
         self.config["device_key"] = device.key
         self._save_config()
-        pair = f"{self.engine.first_channel + 1}-{self.engine.first_channel + 2}"
+        if self.engine.mono:
+            pair = f"{self.engine.first_channel + 1} mono"
+        else:
+            pair = f"{self.engine.first_channel + 1}-{self.engine.first_channel + 2}"
         self.stats.source_name = f"{device.name} {pair} · {device.hostapi} · {self.engine.samplerate // 1000}k"
         self.stats.setToolTip(f"{device.label}\nchannels {pair}, {self.engine.samplerate} Hz")
         self.stats.source_ok = True
+        self.stats.mono = self.engine.mono
+        self.bars.set_mono(self.engine.mono)
         self.engine.paused = False
         self.pause_btn.setText("❚❚")
         self.radar.paused = False

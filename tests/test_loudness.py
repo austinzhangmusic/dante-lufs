@@ -44,6 +44,33 @@ def test_tech3341_case3_relative_gate():
     assert abs(m.integrated + 23.0) < 0.1
 
 
+def test_live_sliding_windows_between_cells():
+    # Feed an odd block size so the last block ends mid-cell; live values must still read -23.
+    seconds = 10.05
+    x = np.stack([sine(1000, -23.0, seconds)] * 2, axis=1)
+    m = LoudnessMeter(FS)
+    feed(m, x, block=1000)
+    assert m._cell_fill != 0
+    assert abs(m.momentary_live + 23.0) < 0.1
+    assert abs(m.short_term_live + 23.0) < 0.1
+    snap = m.snapshot()
+    assert 0.0 <= snap.radar_head < 1.0
+    assert abs(snap.radar_head - (seconds % 60.0) / 60.0) < 1e-6
+
+
+def test_measure_wav_file(tmp_path):
+    from scipy.io import wavfile
+
+    from dante_lufs.measure import measure
+
+    x = np.stack([sine(1000, -23.0, 10)] * 2, axis=1)
+    path = tmp_path / "tone.wav"
+    wavfile.write(path, FS, (x * 32767).astype(np.int16))
+    r = measure(str(path))
+    assert abs(r["integrated_lufs"] + 23.0) < 0.1
+    assert abs(r["true_peak_dbtp"] + 23.0) < 0.2
+
+
 def test_absolute_gate_silence_is_minus_inf():
     m = LoudnessMeter(FS)
     feed(m, np.zeros((FS * 5, 2)))

@@ -7,7 +7,7 @@ import math
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
 from ..dsp.loudness import Snapshot
@@ -73,14 +73,27 @@ class RadarWidget(QWidget):
         self._draw_footer(p, w, h, scale)
         p.end()
 
+    @staticmethod
+    def _smooth(rf: np.ndarray, width: int = 5) -> np.ndarray:
+        """Circular moving average of the radius profile, ignoring empty slots."""
+        valid = (rf > 0).astype(float)
+        kernel = np.ones(width)
+        num = np.convolve(np.concatenate([rf[-width:], rf, rf[:width]]) * np.concatenate(
+            [valid[-width:], valid, valid[:width]]), kernel, mode="same")[width:-width]
+        den = np.convolve(np.concatenate([valid[-width:], valid, valid[:width]]), kernel,
+                          mode="same")[width:-width]
+        out = np.where(den > 0, num / np.maximum(den, 1e-9), 0.0)
+        return np.where(valid > 0, out, 0.0)
+
     def _draw_fill(self, p: QPainter, cx: float, cy: float, R: float) -> None:
         radar = self.snap.radar
         n = len(radar)
         if n == 0:
             return
-        rf = self._rfrac(radar)
+        rf = self._smooth(self._rfrac(radar))
         # Blank a small wedge just ahead of the sweep head.
-        head = int(self.snap.radar_head * n) % n
+        head_frac = self.snap.radar_head
+        head = int(head_frac * n) % n
         gap = max(2, n // 72)
         idx = (head + 1 + np.arange(gap)) % n
         rf[idx] = 0.0
@@ -96,12 +109,22 @@ class RadarWidget(QWidget):
                 continue
             ox = cx + r * R * sx
             oy = cy + r * R * sy
-            ix = cx + lo * R * sx
-            iy = cy + lo * R * sy
-            pts = [QPointF(ox[i], oy[i]) for i in range(n)]
-            pts += [QPointF(ix[i], iy[i]) for i in range(n - 1, -1, -1)]
+            path = QPainterPath(QPointF(ox[0], oy[0]))
+            for i in range(1, n):
+                path.lineTo(ox[i], oy[i])
+            if lo > 0:
+                # Return along the inner circle counter-clockwise back to the top.
+                qt_angle = 90.0 - (n - 1) / n * 360.0
+                path.arcTo(QRectF(cx - lo * R, cy - lo * R, 2 * lo * R, 2 * lo * R),
+                           qt_angle, 360.0 - (360.0 / n))
+            else:
+                path.lineTo(cx, cy)
+            path.closeSubpath()
             p.setBrush(QBrush(theme.RADAR_BANDS[k]))
-            p.drawPolygon(QPolygonF(pts))
+            p.drawPath(path)
+        # Sweep head line
+        p.setPen(QPen(QColor(255, 255, 255, 90), max(1.0, R * 0.004)))
+        p.drawLine(pt(cx, cy, HOLE * R, head_frac * 360.0), pt(cx, cy, R * BAND_EDGES[-1], head_frac * 360.0))
 
     def _draw_grid(self, p: QPainter, cx: float, cy: float, R: float, scale: float) -> None:
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -132,7 +155,7 @@ class RadarWidget(QWidget):
         target_angle = self._ring_angle(self.target)
         tick_len = R * 0.045
         p.setBrush(Qt.BrushStyle.NoBrush)
-        step = 2.0
+        step = 1.5
         deg = RING_START_DEG
         while deg <= RING_START_DEG + RING_SPAN_DEG + 1e-6:
             if m != NEG_INF and deg <= value_angle:

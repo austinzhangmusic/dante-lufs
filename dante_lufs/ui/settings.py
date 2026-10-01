@@ -24,7 +24,7 @@ RATE_CHOICES = [("Device default", 0), ("44100", 44100), ("48000", 48000),
 class SettingsDialog(QDialog):
     def __init__(self, parent, devices: list[InputDevice], config: dict, on_rescan=None):
         super().__init__(parent)
-        self.setWindowTitle("System settings")
+        self.setWindowTitle("Preferences")
         self.setMinimumWidth(520)
         self.devices = devices
         self.config = dict(config)
@@ -43,8 +43,14 @@ class SettingsDialog(QDialog):
         row.addWidget(self.rescan_btn)
         form.addRow("Input device", row)
 
+        self.mode_box = QComboBox()
+        self.mode_box.addItem("Stereo pair", False)
+        self.mode_box.addItem("Mono (single channel, metered as dual-mono)", True)
+        form.addRow("Input mode", self.mode_box)
+
         self.pair_box = QComboBox()
-        form.addRow("Stereo pair", self.pair_box)
+        self.pair_label = QLabel("Stereo pair")
+        form.addRow(self.pair_label, self.pair_box)
 
         self.rate_box = QComboBox()
         for label, value in RATE_CHOICES:
@@ -80,6 +86,8 @@ class SettingsDialog(QDialog):
         layout.addWidget(buttons)
 
         self.device_box.currentIndexChanged.connect(self._fill_pairs)
+        self._select(self.mode_box, bool(self.config.get("mono", False)))
+        self.mode_box.currentIndexChanged.connect(self._fill_pairs)
         self._fill_devices()
         self._select(self.rate_box, self.config.get("samplerate", 0))
         self._select(self.radar_box, self.config.get("radar_seconds", 60))
@@ -105,10 +113,16 @@ class SettingsDialog(QDialog):
         d = self.current_device()
         if d is None:
             return
-        for first in range(0, d.channels - 1, 2):
-            self.pair_box.addItem(f"{first + 1}-{first + 2}", first)
-        if d.channels % 2 == 1 and d.channels > 2:
-            self.pair_box.addItem(f"{d.channels - 1}-{d.channels}", d.channels - 2)
+        mono = bool(self.mode_box.currentData())
+        self.pair_label.setText("Input channel" if mono else "Stereo pair")
+        if mono:
+            for ch in range(d.channels):
+                self.pair_box.addItem(f"{ch + 1}", ch)
+        else:
+            for first in range(0, d.channels - 1, 2):
+                self.pair_box.addItem(f"{first + 1}-{first + 2}", first)
+            if d.channels % 2 == 1 and d.channels > 2:
+                self.pair_box.addItem(f"{d.channels - 1}-{d.channels}", d.channels - 2)
         self._select(self.pair_box, self.config.get("first_channel", 0))
 
     def _rescan(self) -> None:
@@ -129,6 +143,7 @@ class SettingsDialog(QDialog):
         d = self.current_device()
         return {
             "device_key": d.key if d else None,
+            "mono": bool(self.mode_box.currentData()),
             "first_channel": int(self.pair_box.currentData() or 0),
             "samplerate": int(self.rate_box.currentData() or 0),
             "radar_seconds": int(self.radar_box.currentData() or 60),

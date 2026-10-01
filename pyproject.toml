@@ -1,6 +1,6 @@
 [project]
 name = "dante-lufs"
-version = "0.1.0"
+version = "0.2.0"
 description = "Cross-platform stereo LUFS-I meter (Core Audio / ASIO) styled after the TC Electronic Clarity M"
 requires-python = ">=3.10"
 dependencies = [
